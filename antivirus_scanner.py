@@ -1,10 +1,5 @@
 #!/usr/bin/env python3
-"""Simple file scanner wrapper around ClamAV (clamd or clamscan).
-
-Usage examples:
-  python antivirus_scanner.py /path/to/file
-  python antivirus_scanner.py /path/to/folder --recursive
-"""
+"""Simple file scanner wrapper around ClamAV (clamd or clamscan)."""
 
 from __future__ import annotations
 
@@ -12,15 +7,16 @@ import argparse
 import shutil
 import subprocess
 import sys
+from dataclasses import dataclass
 from pathlib import Path
-from typing import Iterable
+from typing import Iterable, List
 
 
+@dataclass
 class ScanResult:
-    def __init__(self, target: Path, status: str, details: str = "") -> None:
-        self.target = target
-        self.status = status
-        self.details = details
+    target: Path
+    status: str
+    details: str = ""
 
     @property
     def infected(self) -> bool:
@@ -43,7 +39,6 @@ class ClamAVScanner:
             self._clamd = False
             return None
 
-        # Try local UNIX socket first, then TCP default.
         for connector in (pyclamd.ClamdUnixSocket, pyclamd.ClamdNetworkSocket):
             try:
                 client = connector()
@@ -89,7 +84,6 @@ class ClamAVScanner:
             return ScanResult(path, "OK")
         if proc.returncode == 1:
             line = proc.stdout.strip().splitlines()[-1] if proc.stdout.strip() else ""
-            # Example: /tmp/eicar.com: Eicar-Signature FOUND
             details = line.split(":", 1)[-1].replace("FOUND", "").strip()
             return ScanResult(path, "FOUND", details)
 
@@ -106,6 +100,17 @@ def iter_files(target: Path, recursive: bool) -> Iterable[Path]:
     for item in target.glob(pattern):
         if item.is_file():
             yield item
+
+
+def scan_target(target: Path, recursive: bool = False) -> List[ScanResult]:
+    scanner = ClamAVScanner()
+    return [scanner.scan_file(path) for path in iter_files(target, recursive)]
+
+
+def summarize_results(results: list[ScanResult]) -> tuple[int, int]:
+    infected = sum(1 for result in results if result.status == "FOUND")
+    errors = sum(1 for result in results if result.status not in {"OK", "FOUND"})
+    return infected, errors
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -128,26 +133,22 @@ def main() -> int:
         print(f"Target not found: {target}", file=sys.stderr)
         return 2
 
-    scanner = ClamAVScanner()
-    results = [scanner.scan_file(path) for path in iter_files(target, args.recursive)]
+    results = scan_target(target, recursive=args.recursive)
 
     if not results:
         print(f"No files found to scan in: {target}")
         return 0
 
-    infected = 0
-    errors = 0
-
     for result in results:
         if result.status == "OK":
             print(f"[OK] {result.target}")
         elif result.status == "FOUND":
-            infected += 1
             details = f" ({result.details})" if result.details else ""
             print(f"[INFECTED] {result.target}{details}")
         else:
-            errors += 1
             print(f"[ERROR] {result.target}: {result.details}")
+
+    infected, errors = summarize_results(results)
 
     print("\nSummary")
     print(f"  Files scanned: {len(results)}")
